@@ -273,6 +273,12 @@ var (
 		},
 		nil,
 	)
+	metricDeviceSelfTestAge = prometheus.NewDesc(
+		"smartctl_device_self_test_age_seconds",
+		"Device self test age in seconds since the most recent completed self test of the given type. -1 means no completed self test of that type was present in the SMART log.",
+		[]string{"device", "self_test_log_type"},
+		nil,
+	)
 	metricDeviceERCSeconds = prometheus.NewDesc(
 		"smartctl_device_erc_seconds",
 		"Device SMART Error Recovery Control Seconds",

@@ -99,6 +99,7 @@ func (smart *SMARTctl) Collect() {
 	smart.mineDeviceStatistics()
 	smart.mineDeviceErrorLog()
 	smart.mineDeviceSelfTestLog()
+	smart.mineDeviceSelfTestAge()
 	smart.mineDeviceERC()
 	smart.mineSmartStatus()
 
@@ -558,6 +559,85 @@ func (smart *SMARTctl) mineDeviceSelfTestLog() {
 			status.Get("error_count_total").Float(),
 			smart.device.device,
 			logType,
+		)
+	}
+}
+
+func (smart *SMARTctl) getPowerOnSeconds() float64 {
+	pot := smart.json.Get("power_on_time")
+	if !pot.Exists() {
+		return 0
+	}
+	return GetFloatIfExists(pot, "hours", 0)*3600 + GetFloatIfExists(pot, "minutes", 0)*60
+}
+
+// unwrapLifetimeHours corrects for the 16-bit wrap-around of the lifetime_hours field
+// in the SMART self-test log (max value 65535 hours).
+func unwrapLifetimeHours(currentHours, testHours int64) int64 {
+	const period = int64(65536)
+	periods := currentHours / period
+	unwrapped := testHours + periods*period
+	if unwrapped > currentHours {
+		unwrapped -= period
+	}
+	return unwrapped
+}
+
+func (smart *SMARTctl) mineDeviceSelfTestAge() {
+	validTypes := map[int64]string{
+		1:   "short",
+		2:   "long",
+		129: "short_captive",
+		255: "vendor",
+	}
+
+	currentPowerOnSeconds := smart.getPowerOnSeconds()
+	currentPowerOnHours := int64(currentPowerOnSeconds / 3600)
+
+	ages := map[string]float64{
+		"short": -1,
+		"long":  -1,
+	}
+
+	processedTypes := make(map[string]bool)
+
+	for _, logEntry := range smart.json.Get("ata_smart_self_test_log.standard.table").Array() {
+		statusValue := logEntry.Get("status.value").Int()
+		if statusValue != 0 {
+			continue
+		}
+
+		testTypeVal := logEntry.Get("type.value").Int()
+		logTestType, exists := validTypes[testTypeVal]
+		if !exists {
+			logTestType = "unknown"
+		}
+
+		if processedTypes[logTestType] {
+			continue
+		}
+		processedTypes[logTestType] = true
+
+		if logTestType != "short" && logTestType != "long" {
+			continue
+		}
+
+		rawLifetimeHours := logEntry.Get("lifetime_hours").Int()
+		unwrappedHours := unwrapLifetimeHours(currentPowerOnHours, rawLifetimeHours)
+		ageSeconds := currentPowerOnSeconds - float64(unwrappedHours*3600)
+		if ageSeconds < 0 {
+			ageSeconds = 0
+		}
+		ages[logTestType] = ageSeconds
+	}
+
+	for _, testType := range []string{"short", "long"} {
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricDeviceSelfTestAge,
+			prometheus.GaugeValue,
+			ages[testType],
+			smart.device.device,
+			testType,
 		)
 	}
 }
