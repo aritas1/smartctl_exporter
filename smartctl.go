@@ -544,7 +544,39 @@ func (smart *SMARTctl) mineDeviceErrorLog() {
 	}
 }
 
+// NVMe self-test results (NVMe base spec, Device Self-test Log) that mean the
+// drive failed the test: 5 fatal error, 6 unknown segment failed, 7 one or
+// more segments failed. 1-4, 8 and 9 are aborts (by command, reset, namespace
+// removal, format, unknown reason, sanitize), not failures.
+var nvmeSelfTestFailed = map[int64]bool{5: true, 6: true, 7: true}
+
 func (smart *SMARTctl) mineDeviceSelfTestLog() {
+	// NVMe: smartctl >= 7.4 prints the log as nvme_self_test_log.table, newest
+	// first, one entry per used slot. Reported as log type "nvme" with the
+	// same two metrics as the ATA logs.
+	if table := smart.json.Get("nvme_self_test_log.table"); table.Exists() {
+		count, failed := 0.0, 0.0
+		for _, entry := range table.Array() {
+			count++
+			if nvmeSelfTestFailed[entry.Get("self_test_result.value").Int()] {
+				failed++
+			}
+		}
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricDeviceSelfTestLogCount,
+			prometheus.GaugeValue,
+			count,
+			smart.device.device,
+			"nvme",
+		)
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricDeviceSelfTestLogErrorCount,
+			prometheus.GaugeValue,
+			failed,
+			smart.device.device,
+			"nvme",
+		)
+	}
 	for logType, status := range smart.json.Get("ata_smart_self_test_log").Map() {
 		smart.ch <- prometheus.MustNewConstMetric(
 			metricDeviceSelfTestLogCount,
@@ -600,6 +632,33 @@ func (smart *SMARTctl) mineDeviceSelfTestAge() {
 	}
 
 	processedTypes := make(map[string]bool)
+
+	// NVMe log (smartctl >= 7.4): self_test_code 1 short, 2 extended;
+	// self_test_result 0 completed without error; power_on_hours is the full
+	// counter, no 16-bit wrap. Newest entry first, as in the ATA log.
+	for _, logEntry := range smart.json.Get("nvme_self_test_log.table").Array() {
+		if logEntry.Get("self_test_result.value").Int() != 0 {
+			continue
+		}
+		var logTestType string
+		switch logEntry.Get("self_test_code.value").Int() {
+		case 1:
+			logTestType = "short"
+		case 2:
+			logTestType = "long"
+		default:
+			continue
+		}
+		if processedTypes[logTestType] {
+			continue
+		}
+		processedTypes[logTestType] = true
+		ageSeconds := currentPowerOnSeconds - float64(logEntry.Get("power_on_hours").Int()*3600)
+		if ageSeconds < 0 {
+			ageSeconds = 0
+		}
+		ages[logTestType] = ageSeconds
+	}
 
 	for _, logEntry := range smart.json.Get("ata_smart_self_test_log.standard.table").Array() {
 		statusValue := logEntry.Get("status.value").Int()
