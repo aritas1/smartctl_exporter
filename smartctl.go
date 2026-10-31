@@ -30,8 +30,8 @@ type SMARTDevice struct {
 	family string
 	model  string
 	// These are used to select types of metrics.
-	interface_ string
-	protocol   string
+	interfaceType string
+	protocol      string
 }
 
 // SMARTctl object
@@ -55,16 +55,16 @@ func buildDeviceLabel(inputName string, inputType string) string {
 }
 
 // NewSMARTctl is smartctl constructor
-func NewSMARTctl(logger *slog.Logger, json gjson.Result, ch chan<- prometheus.Metric) SMARTctl {
-	var model_name string
+func NewSMARTctl(logger *slog.Logger, json gjson.Result, ch chan<- prometheus.Metric, device Device) SMARTctl {
+	var modelName string
 	if obj := json.Get("model_name"); obj.Exists() {
-		model_name = obj.String()
+		modelName = obj.String()
 	} else if obj := json.Get("scsi_model_name"); obj.Exists() {
-		model_name = obj.String()
+		modelName = obj.String()
 	}
 	// If the drive returns an empty model name, replace that with unknown.
-	if model_name == "" {
-		model_name = "unknown"
+	if modelName == "" {
+		modelName = "unknown"
 	}
 
 	return SMARTctl{
@@ -72,12 +72,12 @@ func NewSMARTctl(logger *slog.Logger, json gjson.Result, ch chan<- prometheus.Me
 		json:   json,
 		logger: logger,
 		device: SMARTDevice{
-			device:     buildDeviceLabel(json.Get("device.name").String(), json.Get("device.type").String()),
-			serial:     strings.TrimSpace(json.Get("serial_number").String()),
-			family:     strings.TrimSpace(GetStringIfExists(json, "model_family", "unknown")),
-			model:      strings.TrimSpace(model_name),
-			interface_: strings.TrimSpace(json.Get("device.type").String()),
-			protocol:   strings.TrimSpace(json.Get("device.protocol").String()),
+			device:        device.Label,
+			serial:        strings.TrimSpace(json.Get("serial_number").String()),
+			family:        strings.TrimSpace(GetStringIfExists(json, "model_family", "unknown")),
+			model:         strings.TrimSpace(modelName),
+			interfaceType: strings.TrimSpace(json.Get("device.type").String()),
+			protocol:      strings.TrimSpace(json.Get("device.protocol").String()),
 		},
 	}
 }
@@ -103,7 +103,7 @@ func (smart *SMARTctl) Collect() {
 	smart.mineDeviceERC()
 	smart.mineSmartStatus()
 
-	if smart.device.interface_ == "nvme" {
+	if smart.device.interfaceType == "nvme" || smart.device.protocol == "NVMe" {
 		smart.mineNvmePercentageUsed()
 		smart.mineNvmeAvailableSpare()
 		smart.mineNvmeAvailableSpareThreshold()
@@ -114,7 +114,8 @@ func (smart *SMARTctl) Collect() {
 		smart.mineNvmeBytesWritten()
 	}
 	// SCSI, SAS
-	if smart.device.interface_ == "scsi" {
+	if smart.device.interfaceType == "scsi" {
+		smart.mineSCSIUsedEnduranceIndicator()
 		smart.mineSCSIGrownDefectList()
 		smart.mineSCSIErrorCounterLog()
 		smart.mineSCSIBytesRead()
@@ -137,7 +138,7 @@ func (smart *SMARTctl) mineDevice() {
 		prometheus.GaugeValue,
 		1,
 		smart.device.device,
-		smart.device.interface_,
+		smart.device.interfaceType,
 		smart.device.protocol,
 		smart.device.family,
 		smart.device.model,
@@ -171,12 +172,12 @@ func (smart *SMARTctl) mineCapacity() {
 		smart.json.Get("user_capacity.bytes").Float(),
 		smart.device.device,
 	)
-	nvme_total_capacity := smart.json.Get("nvme_total_capacity")
-	if nvme_total_capacity.Exists() {
+	nvmeTotalCapacity := smart.json.Get("nvme_total_capacity")
+	if nvmeTotalCapacity.Exists() {
 		smart.ch <- prometheus.MustNewConstMetric(
 			metricDeviceTotalCapacityBytes,
 			prometheus.GaugeValue,
-			nvme_total_capacity.Float(),
+			nvmeTotalCapacity.Float(),
 			smart.device.device,
 		)
 	}
@@ -407,9 +408,9 @@ func (smart *SMARTctl) mineNvmeNumErrLogEntries() {
 // (the same as Data Units Read)
 
 func (smart *SMARTctl) mineNvmeBytesRead() {
-	data_units_read := smart.json.Get("nvme_smart_health_information_log.data_units_read")
+	value := smart.json.Get("nvme_smart_health_information_log.data_units_read")
 	// 0 => not reported by underlying hardware
-	if !data_units_read.Exists() || data_units_read.Int() == 0 {
+	if !value.Exists() || value.Int() == 0 {
 		return
 	}
 	smart.ch <- prometheus.MustNewConstMetric(
@@ -417,15 +418,15 @@ func (smart *SMARTctl) mineNvmeBytesRead() {
 		prometheus.CounterValue,
 		// WARNING: Float64 will lose precision when drives reach ~32EiB read/write
 		// The underlying data_units_written,data_units_read are 128-bit integers
-		data_units_read.Float()*1000.0*512.0,
+		value.Float()*1000.0*512.0,
 		smart.device.device,
 	)
 }
 
 func (smart *SMARTctl) mineNvmeBytesWritten() {
-	data_units_written := smart.json.Get("nvme_smart_health_information_log.data_units_written")
+	value := smart.json.Get("nvme_smart_health_information_log.data_units_written")
 	// 0 => not reported by underlying hardware
-	if !data_units_written.Exists() || data_units_written.Int() == 0 {
+	if !value.Exists() || value.Int() == 0 {
 		return
 	}
 	smart.ch <- prometheus.MustNewConstMetric(
@@ -433,7 +434,7 @@ func (smart *SMARTctl) mineNvmeBytesWritten() {
 		prometheus.CounterValue,
 		// WARNING: Float64 will lose precision when drives reach ~32EiB read/write
 		// The underlying data_units_written,data_units_read are 128-bit integers
-		data_units_written.Float()*1000.0*512.0,
+		value.Float()*1000.0*512.0,
 		smart.device.device,
 	)
 }
@@ -714,12 +715,24 @@ func (smart *SMARTctl) mineDeviceERC() {
 }
 
 func (smart *SMARTctl) mineSCSIGrownDefectList() {
-	scsi_grown_defect_list := smart.json.Get("scsi_grown_defect_list")
-	if scsi_grown_defect_list.Exists() {
+	value := smart.json.Get("scsi_grown_defect_list")
+	if value.Exists() {
 		smart.ch <- prometheus.MustNewConstMetric(
 			metricSCSIGrownDefectList,
 			prometheus.GaugeValue,
-			scsi_grown_defect_list.Float(),
+			value.Float(),
+			smart.device.device,
+		)
+	}
+}
+
+func (smart *SMARTctl) mineSCSIUsedEnduranceIndicator() {
+	value := smart.json.Get("scsi_percentage_used_endurance_indicator")
+	if value.Exists() {
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricSCSIUsedEnduranceIndicator,
+			prometheus.GaugeValue,
+			value.Float(),
 			smart.device.device,
 		)
 	}
@@ -776,6 +789,29 @@ func (smart *SMARTctl) mineSCSIErrorCounterLog() {
 			SCSIHealth.Get("write.total_uncorrected_errors").Float(),
 			smart.device.device,
 		)
-		// TODO: Should we also export the verify category?
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricVerifyErrorsCorrectedByRereadsRewrites,
+			prometheus.GaugeValue,
+			SCSIHealth.Get("verify.errors_corrected_by_rereads_rewrites").Float(),
+			smart.device.device,
+		)
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricVerifyErrorsCorrectedByEccFast,
+			prometheus.GaugeValue,
+			SCSIHealth.Get("verify.errors_corrected_by_eccfast").Float(),
+			smart.device.device,
+		)
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricVerifyErrorsCorrectedByEccDelayed,
+			prometheus.GaugeValue,
+			SCSIHealth.Get("verify.errors_corrected_by_eccdelayed").Float(),
+			smart.device.device,
+		)
+		smart.ch <- prometheus.MustNewConstMetric(
+			metricVerifyTotalUncorrectedErrors,
+			prometheus.GaugeValue,
+			SCSIHealth.Get("verify.total_uncorrected_errors").Float(),
+			smart.device.device,
+		)
 	}
 }

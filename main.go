@@ -57,7 +57,45 @@ type SMARTctlManagerCollector struct {
 
 // Describe sends the super-set of all possible descriptors of metrics
 func (i *SMARTctlManagerCollector) Describe(ch chan<- *prometheus.Desc) {
-	prometheus.DescribeByCollect(i, ch)
+	ch <- metricSmartctlVersion
+	ch <- metricDeviceModel
+	ch <- metricDeviceCount
+	ch <- metricDeviceCapacityBlocks
+	ch <- metricDeviceCapacityBytes
+	ch <- metricDeviceTotalCapacityBytes
+	ch <- metricDeviceBlockSize
+	ch <- metricDeviceInterfaceSpeed
+	ch <- metricDeviceAttribute
+	ch <- metricDevicePowerOnSeconds
+	ch <- metricDeviceRotationRate
+	ch <- metricDeviceTemperature
+	ch <- metricDevicePowerCycleCount
+	ch <- metricDevicePercentageUsed
+	ch <- metricDeviceAvailableSpare
+	ch <- metricDeviceAvailableSpareThreshold
+	ch <- metricDeviceCriticalWarning
+	ch <- metricDeviceMediaErrors
+	ch <- metricDeviceNumErrLogEntries
+	ch <- metricDeviceBytesRead
+	ch <- metricDeviceBytesWritten
+	ch <- metricDeviceSmartStatus
+	ch <- metricDeviceExitStatus
+	ch <- metricDeviceState
+	ch <- metricDeviceStatistics
+	ch <- metricDeviceErrorLogCount
+	ch <- metricDeviceSelfTestLogCount
+	ch <- metricDeviceSelfTestLogErrorCount
+	ch <- metricDeviceSelfTestAge
+	ch <- metricDeviceERCSeconds
+	ch <- metricSCSIGrownDefectList
+	ch <- metricReadErrorsCorrectedByRereadsRewrites
+	ch <- metricReadErrorsCorrectedByEccFast
+	ch <- metricReadErrorsCorrectedByEccDelayed
+	ch <- metricReadTotalUncorrectedErrors
+	ch <- metricWriteErrorsCorrectedByRereadsRewrites
+	ch <- metricWriteErrorsCorrectedByEccFast
+	ch <- metricWriteErrorsCorrectedByEccDelayed
+	ch <- metricWriteTotalUncorrectedErrors
 }
 
 // Collect is called by the Prometheus registry when collecting metrics.
@@ -69,7 +107,7 @@ func (i *SMARTctlManagerCollector) Collect(ch chan<- prometheus.Metric) {
 		json := readData(i.logger, device)
 		if json.Exists() {
 			info.SetJSON(json)
-			smart := NewSMARTctl(i.logger, json, ch)
+			smart := NewSMARTctl(i.logger, json, ch, device)
 			smart.Collect()
 		}
 	}

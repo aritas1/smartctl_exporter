@@ -143,3 +143,25 @@ func TestSelfTestATAUnchanged(t *testing.T) {
 		"smartctl_device_self_test_log_error_count{standard}": 0,
 	})
 }
+
+// Upstream's Describe lists every descriptor explicitly (#329); a metric the
+// collector sends without being listed fails the scrape ("unregistered
+// descriptor"). The self-test metrics must all be listed.
+func TestSelfTestDescribed(t *testing.T) {
+	ch := make(chan *prometheus.Desc, 128)
+	(&SMARTctlManagerCollector{}).Describe(ch)
+	close(ch)
+	described := map[*prometheus.Desc]bool{}
+	for d := range ch {
+		described[d] = true
+	}
+	for name, d := range map[string]*prometheus.Desc{
+		"self_test_age_seconds":     metricDeviceSelfTestAge,
+		"self_test_log_count":       metricDeviceSelfTestLogCount,
+		"self_test_log_error_count": metricDeviceSelfTestLogErrorCount,
+	} {
+		if !described[d] {
+			t.Errorf("smartctl_device_%s is not in Describe", name)
+		}
+	}
+}
